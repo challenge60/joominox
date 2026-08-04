@@ -156,15 +156,15 @@ button{font-family:inherit; cursor:pointer;}
 .voice-status.listening .voice-mic{animation:micpulse 1s infinite;}
 
 .mic-overlay{
-  position:fixed; inset:0; z-index:80;
-  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;
-  background:rgba(8,8,13,0.6); backdrop-filter:blur(2px);
+  position:absolute; inset:0; z-index:20; border-radius:26px;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
+  background:rgba(8,8,13,0.82); backdrop-filter:blur(1px);
   opacity:0; pointer-events:none; transition:opacity .18s ease;
 }
 .mic-overlay.show{opacity:1;}
-.mic-overlay-icon{font-size:96px; line-height:1; filter:drop-shadow(0 0 28px rgba(157,107,255,0.85)); animation:micbig 1s infinite;}
-.mic-overlay-text{font-size:17px; font-weight:800; color:#fff; background:rgba(157,107,255,0.28); border:1.5px solid var(--violet); padding:9px 22px; border-radius:999px;}
-@keyframes micbig{0%,100%{transform:scale(1); opacity:1;} 50%{transform:scale(1.18); opacity:0.6;}}
+.mic-overlay-icon{font-size:min(34vw,150px); line-height:1; filter:drop-shadow(0 0 30px rgba(157,107,255,0.9)); animation:micbig 1s infinite;}
+.mic-overlay-text{font-size:18px; font-weight:800; color:#fff; background:rgba(157,107,255,0.28); border:1.5px solid var(--violet); padding:10px 24px; border-radius:999px;}
+@keyframes micbig{0%,100%{transform:scale(1); opacity:1;} 50%{transform:scale(1.12); opacity:0.65;}}
 
 .study-top-info{display:flex; align-items:center; justify-content:space-between; padding:14px 2px 4px; font-size:12.5px; color:var(--text-dim);}
 .study-top-info b{color:var(--text); font-weight:700;}
@@ -506,7 +506,7 @@ const Voice = {
       }catch(e){ resolve(); }
     });
   },
-  listen(timeoutSec){
+  listen(timeoutSec, matcherFn){
     return new Promise((resolve)=>{
       this.lastError = null;
       if(!SpeechRecCtor || this.stopped){ this.lastError='unsupported'; resolve(null); return; }
@@ -516,27 +516,30 @@ const Voice = {
       this.rec = rec;
       rec.lang = 'ko-KR';
       rec.continuous = true;
-      rec.interimResults = false;
-      rec.maxAlternatives = 3;
+      rec.interimResults = true;
+      rec.maxAlternatives = 5;
+      let allText = '';
       const finish = (val)=>{
         if(done) return; done = true;
         try{ rec.onresult=null; rec.onerror=null; rec.onend=null; rec.stop(); }catch(e){}
         resolve(val);
       };
       rec.onresult = (e)=>{
-        let transcript = '';
-        for(let i=0;i<e.results.length;i++){
+        let chunk = '';
+        for(let i=e.resultIndex; i<e.results.length; i++){
           const result = e.results[i];
           for(let j=0;j<result.length;j++){
-            transcript += result[j].transcript + ' ';
+            chunk += result[j].transcript + ' ';
           }
         }
-        finish(transcript);
+        allText += chunk + ' ';
+        // 중간(interim) 결과라도 O/X가 잡히면 엔진의 최종판단을 기다리지 않고 바로 확정
+        if(matcherFn && matcherFn(allText)){ finish(allText); }
       };
-      rec.onerror = (e)=>{ this.lastError = (e && e.error) || 'unknown'; finish(null); };
-      rec.onend = ()=> finish(null);
+      rec.onerror = (e)=>{ this.lastError = (e && e.error) || 'unknown'; finish(allText || null); };
+      rec.onend = ()=> finish(allText || null);
       try{ rec.start(); }catch(e){ this.lastError='start-failed'; finish(null); return; }
-      setTimeout(()=>finish(null), Math.max(1,timeoutSec)*1000 + 400);
+      setTimeout(()=>finish(allText || null), Math.max(1,timeoutSec)*1000 + 400);
     });
   },
   errorMessage(){
@@ -585,7 +588,7 @@ function parseOX(transcript){
   const t = normalizeTranscript(transcript);
   if(!t) return null;
   if(/엑스|엑쓰|가위|틀려|틀렸|아니야|아니다|[xX]/.test(t)) return 'X';
-  if(/오+|오케이|동그라미|맞아|맞다|마자|마짐|정답|[oO]|^0$|5/.test(t)) return 'O';
+  if(/오+|옹|오옹|오케이|동그라미|맞아|맞다|마자|마짐|정답|[oO]|^0$|5/.test(t)) return 'O';
   return null;
 }
 function parseYesNo(transcript){
@@ -624,7 +627,7 @@ async function runVoiceSequence(){
     if(Voice.stopped || !state.voiceRunning) break;
 
     setVoiceStatus('답변을 듣는 중... (O 또는 X)', true);
-    const transcript = await Voice.listen(state.voiceWaitSec);
+    const transcript = await Voice.listen(state.voiceWaitSec, parseOX);
     if(Voice.stopped || !state.voiceRunning) break;
     const answer = parseOX(transcript);
 
@@ -673,7 +676,7 @@ async function askContinueLoop(){
   await Voice.speak('모든 문제를 다 읽었습니다. 계속하시겠습니까? 네, 아니오로 말씀해 주세요.');
   for(let i=0;i<2;i++){
     setVoiceStatus('응답을 듣는 중... (네 / 아니오)', true);
-    const t = await Voice.listen(6);
+    const t = await Voice.listen(6, parseYesNo);
     const yn = parseYesNo(t);
     if(yn==='yes') return 'repeat';
     if(yn==='no') return 'stop';
@@ -1199,7 +1202,10 @@ function renderStudy(){
     <div class="study-wrap">
       <div class="study-top-info"><span>${state.idx+1} / ${total}</span><span>${state.order==='random'?'🔀 랜덤':'📖 순서'}</span></div>
       <div class="card-stage">
-        <div class="card ${flippedCls}" id="card">${bodyHtml}</div>
+        <div class="card ${flippedCls}" id="card">${bodyHtml}${state.voice ? `<div class="mic-overlay ${state.voiceListening?'show':''}" id="micOverlay">
+          <div class="mic-overlay-icon">🎙️</div>
+          <div class="mic-overlay-text">지금 말하세요</div>
+        </div>` : ''}</div>
       </div>
       <div class="nav-row">
         ${ (state.source==='wrong'||state.source==='bookmark') ? '<button class="nav-btn remove" id="removeBtn">🗑</button>' : ''}
@@ -1218,10 +1224,6 @@ function renderStudy(){
         `)}
       </div>` : ''}
     </div>
-    ${state.voice ? `<div class="mic-overlay ${state.voiceListening?'show':''}" id="micOverlay">
-      <div class="mic-overlay-icon">🎙️</div>
-      <div class="mic-overlay-text">지금 말하세요</div>
-    </div>` : ''}
   `;
 
   document.getElementById('back').addEventListener('click', ()=>{ if(state.voiceRunning) stopVoiceRun(); goHome(); });
