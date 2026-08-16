@@ -69,7 +69,7 @@ button{font-family:inherit; cursor:pointer;}
 .home-wrap{flex:1; padding:28px 18px 96px; max-width:880px; margin:0 auto; width:100%;}
 .hero{text-align:center; padding:18px 0 22px;}
 .hero h1{
-  font-size:34px; margin:0 0 6px; font-family:'Black Han Sans',sans-serif;
+  font-size:34px; margin:0 0 6px; font-family:'Noto Sans KR',sans-serif; font-weight:900; letter-spacing:0.3px;
   background:linear-gradient(90deg,var(--cyan),var(--violet));
   -webkit-background-clip:text; background-clip:text; color:transparent;
   text-shadow:0 0 30px rgba(0,230,246,0.25);
@@ -161,6 +161,18 @@ button{font-family:inherit; cursor:pointer;}
 .quiz-choice.o{color:var(--green); border-color:rgba(51,255,171,0.3);}
 .quiz-choice.x{color:var(--red); border-color:rgba(255,61,104,0.3);}
 .quiz-choice:active{transform:scale(0.95);}
+.mic-btn{
+  flex:none; width:54px; border-radius:16px; background:var(--surface2); border:2px solid var(--border);
+  color:var(--cyan); font-size:20px; display:flex; align-items:center; justify-content:center;
+}
+.mic-btn:active{transform:scale(0.95);}
+.mic-btn.listening{border-color:var(--cyan); background:rgba(0,230,246,0.15); animation:mic-pulse 1s infinite;}
+@keyframes mic-pulse{
+  0%{box-shadow:0 0 0 0 rgba(0,230,246,0.5);}
+  70%{box-shadow:0 0 0 12px rgba(0,230,246,0);}
+  100%{box-shadow:0 0 0 0 rgba(0,230,246,0);}
+}
+.voice-debug{margin-top:8px; font-size:11.5px; color:var(--text-dim); text-align:center; min-height:14px; word-break:break-all;}
 
 .reveal-watermark{
   position:absolute; top:-10px; right:-6px; font-family:'Black Han Sans',sans-serif; font-size:170px;
@@ -505,6 +517,51 @@ function pickQuiz(choice){
   else { saveCurrentSession(); }
   render();
 }
+
+/* ---------------- voice answer (STT) ---------------- */
+// 음성 인식 결과를 O/X로 정규화. 한글 "오"는 흔히 숫자 "5"로, "엑스"는 "x"로 인식되므로
+// 발음/표기 변형을 폭넓게 허용한다.
+const VOICE_O_WORDS = ['o','오','5','맞아','맞다','정답','오케이','동그라미'];
+const VOICE_X_WORDS = ['x','엑스','틀려','틀렸','가위표','엑스표'];
+function normalizeVoiceChoice(raw){
+  const norm = String(raw||'').toLowerCase().replace(/[\s.,!?~]/g,'');
+  if(!norm) return null;
+  if(VOICE_O_WORDS.some(w=>norm.includes(w))) return 'O';
+  if(VOICE_X_WORDS.some(w=>norm.includes(w))) return 'X';
+  return null;
+}
+function startVoiceAnswer(btn){
+  if(state.quizPick!==null) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ showToast('이 브라우저는 음성 인식을 지원하지 않아요.'); return; }
+  let rec;
+  try{ rec = new SR(); } catch(err){ showToast('음성 인식을 시작할 수 없어요.'); return; }
+  rec.lang = 'ko-KR';
+  rec.interimResults = true; // TEMP DEBUG: 중간 인식 결과도 화면에 표시
+  rec.continuous = false;
+  rec.maxAlternatives = 4;
+  btn.classList.add('listening');
+  const dbg = document.getElementById('voiceDebug');
+  if(dbg) dbg.textContent = '🎙️ 듣는 중...';
+  rec.onresult = (e)=>{
+    const res = e.results[e.results.length-1];
+    const alts = [];
+    for(let i=0; i<res.length; i++){
+      const pct = res[i].confidence ? Math.round(res[i].confidence*100)+'%' : '';
+      alts.push(`"${res[i].transcript}"${pct?' ('+pct+')':''}`);
+    }
+    if(dbg) dbg.textContent = (res.isFinal ? '✅ 인식됨: ' : '… 인식 중: ') + alts.join(' / ');
+    if(res.isFinal){
+      let matched = null;
+      for(let i=0; i<res.length && !matched; i++){ matched = normalizeVoiceChoice(res[i].transcript); }
+      if(matched) pickQuiz(matched);
+      else showToast('"O" 또는 "X"로 다시 말씀해주세요.');
+    }
+  };
+  rec.onerror = (e)=>{ if(dbg) dbg.textContent = '⚠️ 오류: '+e.error; showToast('음성을 인식하지 못했어요.'); };
+  rec.onend = ()=>{ btn.classList.remove('listening'); };
+  try{ rec.start(); } catch(err){ btn.classList.remove('listening'); }
+}
 function next(){
   if(state.idx < state.set.length-1){ state.idx++; state.flipped=false; state.quizPick=null; saveCurrentSession(); render(); }
 }
@@ -828,7 +885,9 @@ function renderStudy(){
         <div class="quiz-choice-row">
           <button class="quiz-choice o" data-pick="O">O</button>
           <button class="quiz-choice x" data-pick="X">X</button>
+          <button class="mic-btn" id="voiceBtn" type="button" title="음성으로 답하기">🎤</button>
         </div>
+        <div class="voice-debug" id="voiceDebug"></div>
       ` : `<div class="card-hint">탭하여 정답 보기</div>`}
     `;
   } else {
@@ -899,11 +958,14 @@ function renderStudy(){
   cardEl.addEventListener('click', (e)=>{
     if(e.target.closest('[data-pick]')) return;
     if(e.target.closest('#bmk')) return;
+    if(e.target.closest('#voiceBtn')) return;
     flip();
   });
   cardEl.querySelectorAll('[data-pick]').forEach(b=>{
     b.addEventListener('click', ()=> pickQuiz(b.dataset.pick));
   });
+  const voiceBtn = cardEl.querySelector('#voiceBtn');
+  if(voiceBtn) voiceBtn.addEventListener('click', (e)=>{ e.stopPropagation(); startVoiceAnswer(voiceBtn); });
   attachSwipe(cardEl);
 }
 
@@ -911,7 +973,7 @@ function attachSwipe(cardEl){
   let startX=0, startY=0, dx=0, dy=0, dragging=false, active=false;
   const threshold = 70;
   cardEl.addEventListener('touchstart', (e)=>{
-    if(e.target.closest('[data-pick]') || e.target.closest('#bmk') || e.target.closest('.reveal-exp')){ active=false; return; }
+    if(e.target.closest('[data-pick]') || e.target.closest('#bmk') || e.target.closest('#voiceBtn') || e.target.closest('.reveal-exp')){ active=false; return; }
     const t = e.touches[0];
     startX=t.clientX; startY=t.clientY; dx=0; dy=0; dragging=false; active=true;
     cardEl.style.transition='none';
