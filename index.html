@@ -128,44 +128,6 @@ button{font-family:inherit; cursor:pointer;}
 .quiz-toggle-btn.mode-quiz .dot{background:var(--red); box-shadow:0 0 8px var(--red);}
 .quiz-toggle-btn:active{transform:scale(0.96);}
 
-.mode-seg{display:flex; gap:6px; padding:12px 16px 0; justify-content:center; flex-wrap:wrap;}
-.mode-btn{
-  padding:9px 16px; border-radius:999px; border:1.5px solid var(--border); background:var(--surface);
-  color:var(--text-dim); font-weight:700; font-size:12.5px; display:flex; align-items:center; gap:6px;
-}
-.mode-btn:active{transform:scale(0.96);}
-.mode-btn.active.study{border-color:var(--green); color:var(--green); background:rgba(51,255,171,0.08);}
-.mode-btn.active.quiz{border-color:var(--red); color:var(--red); background:rgba(255,61,104,0.08);}
-.mode-btn.active.voice{border-color:var(--violet); color:var(--violet); background:rgba(157,107,255,0.1); box-shadow:0 0 14px rgba(157,107,255,0.25);}
-
-.voice-panel{
-  margin:10px 0 0; padding:10px 14px; border-radius:16px;
-  background:var(--surface); border:1px solid var(--border);
-}
-.voice-row{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
-.voice-row label{font-size:12px; color:var(--text-dim); font-weight:600; white-space:nowrap;}
-.voice-row label b{color:var(--violet);}
-.voice-row input[type=range]{flex:1; min-width:70px; max-width:150px; accent-color:var(--violet);}
-.voice-status{font-size:11.5px; color:var(--violet); font-weight:700; margin-top:6px;}
-.voice-warn{font-size:12px; color:var(--red); text-align:center;}
-.voice-run-btn{border:none; border-radius:999px; padding:8px 14px; font-weight:800; font-size:12.5px; color:#08080d; white-space:nowrap;}
-.voice-run-btn.start{background:var(--violet);}
-.voice-run-btn.stop{background:var(--red);}
-.voice-mic{font-size:14px;}
-@keyframes micpulse{0%,100%{opacity:1;}50%{opacity:0.35;}}
-.voice-status.listening .voice-mic{animation:micpulse 1s infinite;}
-
-.mic-overlay{
-  position:absolute; inset:0; z-index:20; border-radius:26px;
-  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
-  background:rgba(8,8,13,0.82); backdrop-filter:blur(1px);
-  opacity:0; pointer-events:none; transition:opacity .18s ease;
-}
-.mic-overlay.show{opacity:1;}
-.mic-overlay-icon{font-size:min(34vw,150px); line-height:1; filter:drop-shadow(0 0 30px rgba(157,107,255,0.9)); animation:micbig 1s infinite;}
-.mic-overlay-text{font-size:18px; font-weight:800; color:#fff; background:rgba(157,107,255,0.28); border:1.5px solid var(--violet); padding:10px 24px; border-radius:999px;}
-@keyframes micbig{0%,100%{transform:scale(1); opacity:1;} 50%{transform:scale(1.12); opacity:0.65;}}
-
 .study-top-info{display:flex; align-items:center; justify-content:space-between; padding:14px 2px 4px; font-size:12.5px; color:var(--text-dim);}
 .study-top-info b{color:var(--text); font-weight:700;}
 
@@ -320,11 +282,6 @@ const state = {
   partIndex:null,
   order:'sequential',
   quiz:false,
-  voice:false,         // 음성모드 on/off
-  voiceRunning:false,  // 음성모드 실행 중 여부
-  voiceWaitSec:5,      // 답변 대기시간(5~15초)
-  voiceStatus:'',      // 화면에 표시할 상태 텍스트
-  voiceListening:false,
   set:[],              // array of item ids
   idx:0,
   flipped:false,
@@ -474,291 +431,8 @@ function handleProgressCsvFile(file){
   reader.readAsText(file, 'UTF-8');
 }
 
-/* ---------------- 음성모드(Voice Mode) ---------------- */
-const SpeechRecCtor = window.SpeechRecognition || window.webkitSpeechRecognition || null;
-const ttsSupported = ('speechSynthesis' in window);
-const sttSupported = !!SpeechRecCtor;
-
-const Voice = {
-  synth: ('speechSynthesis' in window) ? window.speechSynthesis : null,
-  rec: null,
-  koVoice: null,
-  stopped: false,
-  pickVoice(){
-    if(!this.synth) return null;
-    if(this.koVoice) return this.koVoice;
-    const voices = this.synth.getVoices ? this.synth.getVoices() : [];
-    this.koVoice = voices.find(v=>v.lang && v.lang.toLowerCase().startsWith('ko')) || null;
-    return this.koVoice;
-  },
-  speak(text){
-    return new Promise((resolve)=>{
-      if(!this.synth || this.stopped || !text){ resolve(); return; }
-      try{
-        const u = new SpeechSynthesisUtterance(text);
-        u.lang = 'ko-KR';
-        const v = this.pickVoice(); if(v) u.voice = v;
-        u.rate = 1.0;
-        u.onend = ()=>resolve();
-        u.onerror = ()=>resolve();
-        this.synth.cancel();
-        this.synth.speak(u);
-      }catch(e){ resolve(); }
-    });
-  },
-  listen(timeoutSec, matcherFn){
-    return new Promise((resolve)=>{
-      this.lastError = null;
-      if(!SpeechRecCtor || this.stopped){ this.lastError='unsupported'; resolve(null); return; }
-      let done = false;
-      let rec;
-      try{ rec = new SpeechRecCtor(); }catch(e){ this.lastError='init-failed'; resolve(null); return; }
-      this.rec = rec;
-      rec.lang = 'ko-KR';
-      rec.continuous = true;
-      rec.interimResults = true;
-      rec.maxAlternatives = 5;
-      let allText = '';
-      const finish = (val)=>{
-        if(done) return; done = true;
-        try{ rec.onresult=null; rec.onerror=null; rec.onend=null; rec.stop(); }catch(e){}
-        resolve(val);
-      };
-      rec.onresult = (e)=>{
-        let chunk = '';
-        for(let i=e.resultIndex; i<e.results.length; i++){
-          const result = e.results[i];
-          for(let j=0;j<result.length;j++){
-            chunk += result[j].transcript + ' ';
-          }
-        }
-        allText += chunk + ' ';
-        // 중간(interim) 결과라도 O/X가 잡히면 엔진의 최종판단을 기다리지 않고 바로 확정
-        if(matcherFn && matcherFn(allText)){ finish(allText); }
-      };
-      rec.onerror = (e)=>{ this.lastError = (e && e.error) || 'unknown'; finish(allText || null); };
-      rec.onend = ()=> finish(allText || null);
-      try{ rec.start(); }catch(e){ this.lastError='start-failed'; finish(null); return; }
-      setTimeout(()=>finish(allText || null), Math.max(1,timeoutSec)*1000 + 400);
-    });
-  },
-  errorMessage(){
-    switch(this.lastError){
-      case 'not-allowed':
-      case 'service-not-allowed': return '마이크 권한이 차단되어 있어요. 브라우저 주소창 옆 자물쇠 아이콘에서 마이크 권한을 허용해 주세요.';
-      case 'audio-capture': return '마이크를 찾을 수 없어요. 마이크가 연결되어 있는지 확인해 주세요.';
-      case 'network': return '네트워크 오류로 음성인식에 실패했어요. 인터넷 연결을 확인해 주세요.';
-      case 'unsupported': return '이 브라우저는 음성인식을 지원하지 않아요.';
-      case 'no-speech': return '';
-      default: return '';
-    }
-  },
-  wait(ms){ return new Promise(r=>setTimeout(r, ms)); },
-  beep(){
-    return new Promise((resolve)=>{
-      try{
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        const ctx = new Ctx();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine'; osc.frequency.value = 880;
-        gain.gain.value = 0.0001;
-        osc.connect(gain); gain.connect(ctx.destination);
-        const now = ctx.currentTime;
-        gain.gain.exponentialRampToValueAtTime(0.05, now+0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now+0.22);
-        osc.start(now); osc.stop(now+0.24);
-        osc.onended = ()=>{ try{ ctx.close(); }catch(e){} resolve(); };
-      }catch(e){ resolve(); }
-    });
-  },
-  abort(){
-    this.stopped = true;
-    try{ if(this.synth) this.synth.cancel(); }catch(e){}
-    try{ if(this.rec) this.rec.abort(); }catch(e){}
-  },
-  reset(){ this.stopped = false; }
-};
-
-function normalizeTranscript(t){
-  return t.replace(/[^가-힣a-zA-Z0-9]/g,'');
-}
-function parseOX(transcript){
-  if(!transcript) return null;
-  const t = normalizeTranscript(transcript);
-  if(!t) return null;
-  if(/엑스|엑쓰|가위|틀려|틀렸|아니야|아니다|[xX]/.test(t)) return 'X';
-  if(/오+|옹|오옹|오케이|동그라미|맞아|맞다|마자|마짐|정답|[oO]|^0$|5/.test(t)) return 'O';
-  return null;
-}
-function parseYesNo(transcript){
-  if(!transcript) return null;
-  const t = normalizeTranscript(transcript);
-  if(!t) return null;
-  if(/아니오|아니요|아뇨|no/i.test(t)) return 'no';
-  if(/네|예|넵|yes/i.test(t)) return 'yes';
-  return null;
-}
-
-function setVoiceStatus(text, listening){
-  state.voiceStatus = text || '';
-  state.voiceListening = !!listening;
-  const el = document.querySelector('.voice-status');
-  if(el){
-    el.innerHTML = text ? (`<span class="voice-mic">🎙️</span> ${escapeHtml(text)}`) : '';
-    el.classList.toggle('listening', !!listening);
-  }
-  const overlay = document.getElementById('micOverlay');
-  if(overlay) overlay.classList.toggle('show', !!listening);
-}
-
-async function runVoiceSequence(){
-  Voice.reset();
-  while(state.screen==='study' && state.voice && state.voiceRunning && !Voice.stopped){
-    if(state.set.length===0) break;
-    const it = currentItem();
-    state.flipped = false; state.quizPick = null; render();
-
-    setVoiceStatus('문제를 읽는 중...');
-    await Voice.speak(it.q);
-    if(Voice.stopped || !state.voiceRunning) break;
-
-    await Voice.speak('정답을 말하세요.');
-    if(Voice.stopped || !state.voiceRunning) break;
-
-    setVoiceStatus('답변을 듣는 중... (O 또는 X)', true);
-    const transcript = await Voice.listen(state.voiceWaitSec, parseOX);
-    if(Voice.stopped || !state.voiceRunning) break;
-    const answer = parseOX(transcript);
-
-    let resultText;
-    let diag = '';
-    if(answer){
-      pickQuiz(answer);
-      resultText = (answer===it.a) ? `${it.a}, 정답입니다.` : `틀렸습니다. ${it.a} 입니다.`;
-    } else {
-      state.flipped = true; state.quizPick = null; render();
-      resultText = `응답을 인식하지 못했습니다. 정답은 ${it.a} 입니다.`;
-      diag = Voice.errorMessage();
-    }
-    setVoiceStatus(diag ? ('⚠️ ' + diag) : '결과를 안내하는 중...');
-    await Voice.speak(resultText);
-    if(Voice.stopped || !state.voiceRunning) break;
-
-    if(it.e){
-      await Voice.speak('해설. ' + it.e);
-      if(Voice.stopped || !state.voiceRunning) break;
-    }
-
-    if(state.idx < state.set.length-1){
-      setVoiceStatus('잠시 후 다음 문제로 넘어갑니다...');
-      await Voice.wait(3000);
-      if(Voice.stopped || !state.voiceRunning) break;
-      next();
-    } else {
-      await Voice.wait(500);
-      const cont = await askContinueLoop();
-      if(Voice.stopped || !state.voiceRunning) break;
-      if(cont==='repeat'){
-        state.idx = 0; state.flipped=false; state.quizPick=null; saveCurrentSession(); render();
-        continue;
-      } else {
-        stopVoiceRun();
-        goHome();
-        break;
-      }
-    }
-  }
-}
-
-async function askContinueLoop(){
-  setVoiceStatus('계속 여부를 묻는 중...');
-  await Voice.speak('모든 문제를 다 읽었습니다. 계속하시겠습니까? 네, 아니오로 말씀해 주세요.');
-  for(let i=0;i<2;i++){
-    setVoiceStatus('응답을 듣는 중... (네 / 아니오)', true);
-    const t = await Voice.listen(6, parseYesNo);
-    const yn = parseYesNo(t);
-    if(yn==='yes') return 'repeat';
-    if(yn==='no') return 'stop';
-    if(Voice.stopped || !state.voiceRunning) return 'stop';
-    await Voice.speak('네 또는 아니오로 다시 말씀해 주세요.');
-  }
-  return 'stop';
-}
-
-async function ensureMicPermission(){
-  if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) return true; // can't check, assume OK
-  try{
-    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
-    stream.getTracks().forEach(t=>t.stop());
-    return true;
-  }catch(e){
-    return false;
-  }
-}
-
-function isLikelySecureOrigin(){
-  const proto = location.protocol;
-  const host = location.hostname;
-  return proto === 'https:' || host === 'localhost' || host === '127.0.0.1';
-}
-
-/* ---------------- 화면 꺼짐 방지(Wake Lock) ---------------- */
-let wakeLock = null;
-async function requestWakeLock(){
-  try{
-    if('wakeLock' in navigator){
-      wakeLock = await navigator.wakeLock.request('screen');
-      wakeLock.addEventListener('release', ()=>{ wakeLock = null; });
-    }
-  }catch(e){ wakeLock = null; }
-}
-function releaseWakeLock(){
-  try{ if(wakeLock){ wakeLock.release(); } }catch(e){}
-  wakeLock = null;
-}
-document.addEventListener('visibilitychange', ()=>{
-  if(document.visibilityState === 'visible' && state.voiceRunning && !wakeLock){
-    requestWakeLock();
-  }
-});
-
-async function startVoiceRun(){
-  if(!ttsSupported || !sttSupported){
-    showToast('이 브라우저는 음성모드를 지원하지 않아요. (Chrome 권장)');
-    return;
-  }
-  if(state.set.length===0){ showToast('학습할 문제가 없어요.'); return; }
-  if(!isLikelySecureOrigin()){
-    showToast('이 파일이 https 주소가 아니라 열려 있어서(예: content://, file://) 마이크 사용이 브라우저에서 차단돼요. 파일을 웹에 올려 https 주소로 열어 주세요.');
-    return;
-  }
-  setVoiceStatus('마이크 권한을 확인하는 중...');
-  const ok = await ensureMicPermission();
-  if(!ok){
-    setVoiceStatus('');
-    showToast('마이크 권한이 필요해요. 브라우저 설정에서 마이크를 허용해 주세요.');
-    return;
-  }
-  state.voiceRunning = true;
-  render();
-  await requestWakeLock();
-  runVoiceSequence();
-}
-function stopVoiceRun(){
-  Voice.abort();
-  state.voiceRunning = false;
-  state.voiceStatus = '';
-  releaseWakeLock();
-  render();
-}
-function exitVoiceMode(){
-  stopVoiceRun();
-  state.voice = false;
-}
-
 /* ---------------- navigation ---------------- */
-function goHome(){ Voice.abort(); state.voiceRunning=false; state.voice=false; releaseWakeLock(); state.screen='home'; state.flipped=false; state.quizPick=null; render(); }
+function goHome(){ state.screen='home'; state.flipped=false; state.quizPick=null; render(); }
 
 function startPart(p, order){
   let ids = partItems(p);
@@ -1193,76 +867,44 @@ function renderStudy(){
     </div>
     <div class="progress-line"><div class="progress-line-fill" style="width:${pct}%"></div></div>
     <div class="quizbar">
-      <div class="mode-seg">
-        <button class="mode-btn ${(!state.quiz && !state.voice)?'active study':''}" data-mode="study">📖 Study</button>
-        <button class="mode-btn ${(state.quiz && !state.voice)?'active quiz':''}" data-mode="quiz">❓ Quiz</button>
-        <button class="mode-btn ${state.voice?'active voice':''}" data-mode="voice">🎙️ 음성</button>
-      </div>
+      <button class="quiz-toggle-btn ${state.quiz?'mode-quiz':'mode-study'}" id="quiztoggle">
+        <span class="dot"></span>${state.quiz ? 'Quiz Mode' : 'Study Mode'}
+      </button>
     </div>
     <div class="study-wrap">
       <div class="study-top-info"><span>${state.idx+1} / ${total}</span><span>${state.order==='random'?'🔀 랜덤':'📖 순서'}</span></div>
       <div class="card-stage">
-        <div class="card ${flippedCls}" id="card">${bodyHtml}${state.voice ? `<div class="mic-overlay ${state.voiceListening?'show':''}" id="micOverlay">
-          <div class="mic-overlay-icon">🎙️</div>
-          <div class="mic-overlay-text">지금 말하세요</div>
-        </div>` : ''}</div>
+        <div class="card ${flippedCls}" id="card">${bodyHtml}</div>
       </div>
       <div class="nav-row">
         ${ (state.source==='wrong'||state.source==='bookmark') ? '<button class="nav-btn remove" id="removeBtn">🗑</button>' : ''}
-        <button class="nav-btn" id="prevBtn" ${(state.idx===0||state.voiceRunning)?'disabled':''}>‹ 이전</button>
-        <button class="nav-btn" id="nextBtn" ${(state.idx===total-1||state.voiceRunning)?'disabled':''}>다음 ›</button>
+        <button class="nav-btn" id="prevBtn" ${state.idx===0?'disabled':''}>‹ 이전</button>
+        <button class="nav-btn" id="nextBtn" ${state.idx===total-1?'disabled':''}>다음 ›</button>
       </div>
-      ${state.voice ? `
-      <div class="voice-panel">
-        ${(!ttsSupported || !sttSupported) ? `<div class="voice-warn">⚠️ 이 브라우저는 음성모드(음성인식)를 지원하지 않아요. 최신 Chrome을 사용해 보세요.</div>` : (!isLikelySecureOrigin() ? `<div class="voice-warn">⚠️ 이 파일이 https 주소가 아니라 열려 있어요(예: content://, file://). 이 상태에서는 마이크가 차단돼서 음성인식이 동작하지 않아요. 파일을 웹에 올려 https 주소로 열어 주세요.</div>` : `
-        <div class="voice-row">
-          <button class="voice-run-btn ${state.voiceRunning?'stop':'start'}" id="voiceRunBtn">${state.voiceRunning?'⏹ 중지':'▶ 시작'}</button>
-          <label>대기 <b id="voiceWaitLabel">${state.voiceWaitSec}초</b></label>
-          <input type="range" min="5" max="15" step="1" value="${state.voiceWaitSec}" id="voiceWaitSlider" ${state.voiceRunning?'disabled':''}>
-        </div>
-        ${state.voiceStatus ? `<div class="voice-status ${state.voiceListening?'listening':''}"><span class="voice-mic">🎙️</span> ${escapeHtml(state.voiceStatus)}</div>` : ''}
-        `)}
-      </div>` : ''}
     </div>
   `;
 
-  document.getElementById('back').addEventListener('click', ()=>{ if(state.voiceRunning) stopVoiceRun(); goHome(); });
-  document.getElementById('prevBtn').addEventListener('click', ()=>{ if(state.voiceRunning) return; prev(); });
-  document.getElementById('nextBtn').addEventListener('click', ()=>{ if(state.voiceRunning) return; next(); });
+  document.getElementById('back').addEventListener('click', goHome);
+  document.getElementById('prevBtn').addEventListener('click', prev);
+  document.getElementById('nextBtn').addEventListener('click', next);
   const rm = document.getElementById('removeBtn');
-  if(rm) rm.addEventListener('click', ()=>{ if(state.voiceRunning) return; removeCurrentFromList(); });
-
-  document.querySelectorAll('.mode-btn').forEach(b=>b.addEventListener('click', ()=>{
-    const m = b.dataset.mode;
-    if(state.voiceRunning) stopVoiceRun();
-    if(m==='study'){ state.voice=false; state.quiz=false; }
-    else if(m==='quiz'){ state.voice=false; state.quiz=true; }
-    else if(m==='voice'){ state.voice=true; state.quiz=true; }
-    state.flipped=false; state.quizPick=null; saveCurrentSession(); render();
-  }));
-  const vs = document.getElementById('voiceWaitSlider');
-  if(vs) vs.addEventListener('input', ()=>{
-    state.voiceWaitSec = Number(vs.value);
-    const lbl = document.getElementById('voiceWaitLabel');
-    if(lbl) lbl.textContent = state.voiceWaitSec + '초';
-  });
-  const vrb = document.getElementById('voiceRunBtn');
-  if(vrb) vrb.addEventListener('click', ()=>{ state.voiceRunning ? stopVoiceRun() : startVoiceRun(); });
+  if(rm) rm.addEventListener('click', removeCurrentFromList);
+  const qt = document.getElementById('quiztoggle');
+  if(qt) qt.addEventListener('click', ()=>{ state.quiz=!state.quiz; state.flipped=false; state.quizPick=null; saveCurrentSession(); render(); });
 
   const bmk = document.getElementById('bmk');
   if(bmk) bmk.addEventListener('click', (e)=>{ e.stopPropagation(); toggleBookmark(it.id); render(); });
 
   const cardEl = document.getElementById('card');
   cardEl.addEventListener('click', (e)=>{
-    if(state.voiceRunning) return;
     if(e.target.closest('[data-pick]')) return;
     if(e.target.closest('#bmk')) return;
     flip();
   });
   cardEl.querySelectorAll('[data-pick]').forEach(b=>{
-    b.addEventListener('click', ()=>{ if(state.voiceRunning) return; pickQuiz(b.dataset.pick); });
+    b.addEventListener('click', ()=> pickQuiz(b.dataset.pick));
   });
-  if(!state.voiceRunning) attachSwipe(cardEl);
+  attachSwipe(cardEl);
 }
 
 function attachSwipe(cardEl){
